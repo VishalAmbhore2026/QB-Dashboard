@@ -1,0 +1,9 @@
+{
+  "dsn_name": "QuickBooks Data",
+  "sync_interval_minutes": 15,
+  "demo_mode": false,
+  "company_label": "Rock Castle constructions",
+  "last_sync": "2026-04-29T09:35:03.035376",
+  "last_sync_status": "Success",
+  "fy_start_month": 1
+}

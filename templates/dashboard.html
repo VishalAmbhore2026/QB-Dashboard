@@ -1,0 +1,177 @@
+{% extends "base.html" %}
+{% block title %}Dashboard · Management{% endblock %}
+
+{% block content %}
+<section class="hero">
+  <div>
+    <div class="eyebrow">Live Overview</div>
+    <h1 class="hero-title">{{ cfg.company_label }}</h1>
+    <p class="hero-sub">Everything is clickable. Drill down as deep as you want.</p>
+  </div>
+  <div class="hero-meta">
+    <div class="meta-block">
+      <div class="meta-label">Period</div>
+      <select id="period-select" class="meta-select">
+        <option value="today">Today</option>
+        <option value="yesterday">Yesterday</option>
+        <option value="this_week">This Week</option>
+        <option value="this_month" selected>This Month</option>
+        <option value="this_quarter">This Quarter</option>
+        <option value="this_year">This Year (YTD)</option>
+        <option value="last_7">Last 7 Days</option>
+        <option value="last_30">Last 30 Days</option>
+        <option value="last_90">Last 90 Days</option>
+        <option value="last_month">Last Month</option>
+        <option value="last_quarter">Last Quarter</option>
+        <option value="last_year">Last Year</option>
+        <option value="all">All Time</option>
+        <option value="custom">Custom Range…</option>
+      </select>
+    </div>
+    <div class="meta-block" id="custom-range-wrap" style="display:none;">
+      <div class="meta-label">From → To</div>
+      <div style="display:flex; gap:6px; align-items:center;">
+        <input type="date" id="custom-from" class="meta-select" style="min-width:140px; padding:6px 10px;" />
+        <span style="color:var(--muted); font-family:var(--font-mono); font-size:12px;">to</span>
+        <input type="date" id="custom-to" class="meta-select" style="min-width:140px; padding:6px 10px;" />
+        <button id="custom-apply" class="btn btn-primary" style="padding:6px 14px; font-size:12px;">Apply</button>
+      </div>
+    </div>
+    <div class="meta-block">
+      <div class="meta-label">Compare vs</div>
+      <select id="compare-select" class="meta-select">
+        <option value="previous_period" selected>Previous Period</option>
+        <option value="previous_year">Previous Year</option>
+        <option value="previous_month">Previous Month</option>
+        <option value="previous_quarter">Previous Quarter</option>
+      </select>
+    </div>
+  </div>
+</section>
+
+<section class="search-bar">
+  <svg viewBox="0 0 20 20" width="16" height="16" fill="currentColor" style="color:var(--muted); flex-shrink:0;">
+    <path fill-rule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clip-rule="evenodd"/>
+  </svg>
+  <input type="text" id="global-search" placeholder="Search customers, vendors, invoices, bills, items, accounts, amounts…" autocomplete="off" />
+  <div id="search-results" class="search-results" style="display:none;"></div>
+</section>
+
+<nav id="breadcrumbs" class="breadcrumbs" style="display:none;"></nav>
+
+<div id="view-overview" class="view">
+  <section class="kpi-grid" id="kpi-grid"></section>
+
+  <section class="grid-2">
+    <div class="panel">
+      <div class="panel-head">
+        <h3 class="panel-title">Revenue vs Expenses</h3>
+        <span class="panel-sub">Click a bar to see that month</span>
+      </div>
+      <div id="chart-trend" class="chart-container"></div>
+    </div>
+    <div class="panel">
+      <div class="panel-head">
+        <h3 class="panel-title">AR Aging</h3>
+        <span class="panel-sub">Click bucket to drill</span>
+      </div>
+      <div id="chart-aging" class="chart-container"></div>
+    </div>
+  </section>
+
+  <section class="grid-2">
+    <div class="panel">
+      <div class="panel-head">
+        <h3 class="panel-title">Top Customers (Revenue)</h3>
+        <span class="panel-sub">Click to see their invoices</span>
+      </div>
+      <div id="chart-customers" class="chart-container"></div>
+    </div>
+    <div class="panel">
+      <div class="panel-head">
+        <h3 class="panel-title">Expense Categories</h3>
+        <span class="panel-sub">Click slice for detail</span>
+      </div>
+      <div id="chart-expenses" class="chart-container"></div>
+    </div>
+  </section>
+
+  <section class="grid-3">
+    <div class="panel summary-card clickable" data-drill='{"level":"pnl"}'>
+      <div class="panel-head">
+        <h3 class="panel-title">Profit &amp; Loss</h3>
+        <span class="panel-sub">Click to open →</span>
+      </div>
+      <div id="summary-pnl" class="summary-body"></div>
+    </div>
+    <div class="panel summary-card clickable" data-drill='{"level":"bs"}'>
+      <div class="panel-head">
+        <h3 class="panel-title">Balance Sheet</h3>
+        <span class="panel-sub">Click to open →</span>
+      </div>
+      <div id="summary-bs" class="summary-body"></div>
+    </div>
+    <div class="panel summary-card clickable" data-drill='{"level":"cf"}'>
+      <div class="panel-head">
+        <h3 class="panel-title">Cash Flow</h3>
+        <span class="panel-sub">Click to open →</span>
+      </div>
+      <div id="summary-cf" class="summary-body"></div>
+    </div>
+  </section>
+
+  <section class="grid-2">
+    <div class="panel">
+      <div class="panel-head">
+        <h3 class="panel-title">Top Selling Items</h3>
+        <span class="panel-sub">Click for details</span>
+      </div>
+      <div class="table-wrap">
+        <table class="data-table" id="tbl-items">
+          <thead><tr><th>Item</th><th class="num">Quantity</th><th class="num">Revenue</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-head">
+        <h3 class="panel-title">Top Vendors (Purchases)</h3>
+        <span class="panel-sub">Click for details</span>
+      </div>
+      <div class="table-wrap">
+        <table class="data-table" id="tbl-vendors">
+          <thead><tr><th>Vendor</th><th class="num">Txns</th><th class="num">Amount</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head">
+      <h3 class="panel-title">Recent Transactions</h3>
+      <span class="panel-sub">Click any row to drill</span>
+    </div>
+    <div class="table-wrap">
+      <table class="data-table" id="tbl-recent">
+        <thead><tr><th>Type</th><th>Number</th><th>Party</th><th>Date</th><th class="num">Amount</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+</div>
+
+<div id="view-drill" class="view" style="display:none;">
+  <div class="panel">
+    <div class="panel-head">
+      <h3 class="panel-title" id="drill-title">Detail</h3>
+      <span class="panel-sub" id="drill-sub"></span>
+    </div>
+    <div id="drill-content"></div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
+{% endblock %}

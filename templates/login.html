@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Login · Management Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700&family=Geist:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
+  <style>
+    .login-shell {
+      min-height: 100vh;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      max-width: 1440px;
+      margin: 0 auto;
+    }
+    .login-marketing {
+      background: var(--ink);
+      color: var(--paper);
+      padding: 60px 64px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      position: relative;
+      overflow: hidden;
+    }
+    .login-marketing::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(ellipse at top right,
+                  rgba(201, 85, 31, 0.15), transparent 60%);
+      pointer-events: none;
+    }
+    .login-brand {
+      font-family: var(--font-display);
+      font-size: 28px;
+      font-weight: 500;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      position: relative;
+    }
+    .login-brand-mark { color: var(--accent); font-size: 22px; }
+    .login-headline {
+      font-family: var(--font-display);
+      font-size: 56px;
+      font-weight: 500;
+      line-height: 1.05;
+      letter-spacing: -0.02em;
+      margin: 0 0 24px;
+      position: relative;
+    }
+    .login-tagline {
+      color: rgba(245,241,232,0.7);
+      font-size: 16px;
+      line-height: 1.6;
+      max-width: 420px;
+      position: relative;
+    }
+    .login-features {
+      position: relative;
+      margin-top: 48px;
+    }
+    .login-feature {
+      display: flex;
+      gap: 14px;
+      align-items: flex-start;
+      margin-bottom: 20px;
+      font-size: 14px;
+      color: rgba(245,241,232,0.85);
+    }
+    .login-feature-mark {
+      color: var(--accent);
+      font-family: var(--font-mono);
+      font-weight: 600;
+      flex-shrink: 0;
+    }
+    .login-footer {
+      position: relative;
+      color: rgba(245,241,232,0.4);
+      font-family: var(--font-mono);
+      font-size: 11px;
+      letter-spacing: 0.05em;
+    }
+
+    .login-form-section {
+      background: var(--paper);
+      padding: 80px 80px;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+    }
+    .login-form-box {
+      max-width: 380px;
+      width: 100%;
+    }
+    .login-eyebrow {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.15em;
+      color: var(--accent);
+      margin-bottom: 12px;
+      font-weight: 500;
+    }
+    .login-title {
+      font-family: var(--font-display);
+      font-size: 42px;
+      font-weight: 500;
+      color: var(--ink);
+      line-height: 1;
+      letter-spacing: -0.02em;
+      margin: 0 0 14px;
+    }
+    .login-sub {
+      color: var(--muted);
+      font-size: 15px;
+      margin: 0 0 40px;
+    }
+    .login-form label {
+      display: block;
+      font-family: var(--font-mono);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: var(--muted);
+      font-weight: 500;
+      margin-bottom: 6px;
+      margin-top: 18px;
+    }
+    .login-form input {
+      width: 100%;
+      padding: 12px 14px;
+      font-family: var(--font-sans);
+      font-size: 15px;
+      border: 1px solid var(--line-2);
+      border-radius: var(--radius);
+      background: var(--surface);
+      color: var(--ink);
+      transition: border-color 120ms;
+    }
+    .login-form input:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-soft);
+    }
+    .login-submit {
+      width: 100%;
+      padding: 14px;
+      margin-top: 28px;
+      background: var(--ink);
+      color: var(--paper);
+      border: none;
+      border-radius: var(--radius);
+      font-family: inherit;
+      font-size: 14px;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      cursor: pointer;
+      transition: background 120ms;
+    }
+    .login-submit:hover { background: var(--accent); }
+    .login-error {
+      margin-top: 20px;
+      padding: 12px 14px;
+      background: var(--bad-soft);
+      color: var(--bad);
+      border-left: 3px solid var(--bad);
+      border-radius: 0 var(--radius) var(--radius) 0;
+      font-size: 13px;
+    }
+    .login-hint {
+      margin-top: 32px;
+      padding: 14px 16px;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      font-size: 12px;
+      color: var(--muted);
+      font-family: var(--font-mono);
+    }
+    .login-hint strong { color: var(--ink); }
+
+    @media (max-width: 900px) {
+      .login-shell { grid-template-columns: 1fr; }
+      .login-marketing { padding: 32px 28px; min-height: 240px; }
+      .login-headline { font-size: 36px; }
+      .login-features { display: none; }
+      .login-form-section { padding: 40px 28px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="login-shell">
+    <!-- LEFT: Marketing / brand -->
+    <div class="login-marketing">
+      <div>
+        <div class="login-brand">
+          <span class="login-brand-mark">◆</span>
+          <span>Management<span style="color:var(--accent)">.</span>Dashboard</span>
+        </div>
+      </div>
+      <div>
+        <h1 class="login-headline">Your numbers,<br/>on demand.</h1>
+        <p class="login-tagline">
+          A live view of cash position, receivables, and profitability —
+          synced straight from your accounting system.
+        </p>
+        <div class="login-features">
+          <div class="login-feature">
+            <span class="login-feature-mark">01</span>
+            <span>Every number clickable. Drill into any figure down to the line item.</span>
+          </div>
+          <div class="login-feature">
+            <span class="login-feature-mark">02</span>
+            <span>Period comparisons on demand — week, month, quarter, year, any range.</span>
+          </div>
+          <div class="login-feature">
+            <span class="login-feature-mark">03</span>
+            <span>Global search across customers, vendors, invoices, bills, accounts.</span>
+          </div>
+        </div>
+      </div>
+      <div class="login-footer">SECURED ACCESS · SESSION 30 DAYS</div>
+    </div>
+
+    <!-- RIGHT: Form -->
+    <div class="login-form-section">
+      <div class="login-form-box">
+        <div class="login-eyebrow">Welcome back</div>
+        <h2 class="login-title">Sign in</h2>
+        <p class="login-sub">Enter your credentials to access the dashboard.</p>
+
+        <form method="post" class="login-form" autocomplete="on">
+          <label for="username">Username</label>
+          <input id="username" name="username" type="text" value="{{ username }}"
+                 autofocus required autocomplete="username" />
+
+          <label for="password">Password</label>
+          <input id="password" name="password" type="password" required
+                 autocomplete="current-password" />
+
+          <button type="submit" class="login-submit">Sign in →</button>
+        </form>
+
+        {% with msgs = get_flashed_messages(category_filter=['error']) %}
+          {% if msgs %}
+            <div class="login-error">{{ msgs[0] }}</div>
+          {% endif %}
+        {% endwith %}
+
+        <div class="login-hint">
+          <strong>First time?</strong> Default admin login is <code>admin</code> / <code>admin</code>.
+          You'll be asked to change your password immediately after sign-in.
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

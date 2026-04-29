@@ -1,0 +1,216 @@
+{% extends "base.html" %}
+{% block title %}User Management · Dashboard{% endblock %}
+
+{% block content %}
+<section class="hero">
+  <div>
+    <div class="eyebrow">Administration</div>
+    <h1 class="hero-title">User Management</h1>
+    <p class="hero-sub">
+      {{ counts.admin }}/{{ max_admins }} admins · {{ counts.viewer }}/{{ max_viewers }} viewers
+    </p>
+  </div>
+</section>
+
+{% with msgs = get_flashed_messages(with_categories=true) %}
+  {% for cat, m in msgs %}
+    <div class="alert alert-{{ cat }}">{{ m }}</div>
+  {% endfor %}
+{% endwith %}
+
+<div class="grid-2">
+  <!-- User list -->
+  <div class="panel" style="grid-column: 1 / -1;">
+    <div class="panel-head">
+      <h3 class="panel-title">Active Users</h3>
+      <span class="panel-sub">Admins have full control · Viewers see data only</span>
+    </div>
+    <div class="table-wrap">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Username</th>
+            <th>Name</th>
+            <th>Role</th>
+            <th>Status</th>
+            <th>Last Login</th>
+            <th style="width: 280px;">Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for u in users %}
+          <tr>
+            <td><code style="font-family:var(--font-mono); background:var(--paper-2); padding:2px 6px; border-radius:3px; font-size:12px;">{{ u.username }}</code></td>
+            <td>{{ u.name }}</td>
+            <td>
+              {% if u.role == 'admin' %}
+                <span class="tag" style="background: var(--accent-soft); color: var(--accent);">Admin</span>
+              {% else %}
+                <span class="tag tag-bill">Viewer</span>
+              {% endif %}
+            </td>
+            <td>
+              {% if u.is_active %}
+                <span class="tag tag-paid">Active</span>
+              {% else %}
+                <span class="tag" style="background: var(--bad-soft); color: var(--bad);">Disabled</span>
+              {% endif %}
+              {% if u.must_change_password %}
+                <span class="tag" style="background: var(--warn-soft); color: var(--warn); margin-left: 4px;">Must change pwd</span>
+              {% endif %}
+            </td>
+            <td style="font-family: var(--font-mono); font-size: 11px; color: var(--muted);">
+              {{ u.last_login_at[:16].replace('T', ' ') if u.last_login_at else 'Never' }}
+            </td>
+            <td>
+              <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+                {% if u.id != session.uid %}
+                <form method="post" action="/users/{{ u.id }}/toggle" style="display: inline;"
+                      onsubmit="return confirm('{% if u.is_active %}Deactivate{% else %}Activate{% endif %} {{ u.username }}?');">
+                  <button type="submit" class="btn btn-ghost" style="padding: 4px 10px; font-size: 11px;">
+                    {{ 'Disable' if u.is_active else 'Enable' }}
+                  </button>
+                </form>
+                <button type="button" class="btn btn-ghost" style="padding: 4px 10px; font-size: 11px;"
+                        onclick="showResetPwd({{ u.id }}, '{{ u.username }}')">
+                  Reset Pwd
+                </button>
+                <form method="post" action="/users/{{ u.id }}/delete" style="display: inline;"
+                      onsubmit="return confirm('DELETE {{ u.username }}? This cannot be undone.');">
+                  <button type="submit" class="btn btn-ghost" style="padding: 4px 10px; font-size: 11px; color: var(--bad); border-color: var(--bad-soft);">
+                    Delete
+                  </button>
+                </form>
+                {% else %}
+                <span style="color: var(--muted); font-size: 11px; font-family: var(--font-mono);">(you)</span>
+                {% endif %}
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Create new user form -->
+  <div class="panel">
+    <div class="panel-head"><h3 class="panel-title">Add New User</h3></div>
+    <form method="post" action="/users/create" class="form">
+      <div class="form-row">
+        <label class="field">
+          <span class="field-label">Username</span>
+          <input type="text" name="username" required pattern="[a-z0-9_.-]{3,}" />
+          <span class="hint">3+ chars, no spaces, lowercase recommended.</span>
+        </label>
+      </div>
+      <div class="form-row">
+        <label class="field">
+          <span class="field-label">Full Name</span>
+          <input type="text" name="name" required />
+        </label>
+      </div>
+      <div class="form-row">
+        <label class="field">
+          <span class="field-label">Email (optional)</span>
+          <input type="text" name="email" />
+        </label>
+      </div>
+      <div class="form-row">
+        <label class="field">
+          <span class="field-label">Initial Password</span>
+          <input type="text" name="password" required minlength="6" value="changeme123" />
+          <span class="hint">User will be forced to change on first login.</span>
+        </label>
+      </div>
+      <div class="form-row">
+        <label class="field">
+          <span class="field-label">Role</span>
+          <select name="role" style="width:100%; padding:10px 12px; font-family: var(--font-mono); font-size:13px; border:1px solid var(--line-2); border-radius:var(--radius); background:var(--surface); color: var(--ink);">
+            {% if counts.viewer < max_viewers %}
+              <option value="viewer" selected>Viewer — read-only access</option>
+            {% endif %}
+            {% if counts.admin < max_admins %}
+              <option value="admin">Admin — full control</option>
+            {% endif %}
+          </select>
+        </label>
+      </div>
+      <div class="form-row form-actions">
+        <button type="submit" class="btn btn-primary">Create User</button>
+      </div>
+    </form>
+  </div>
+
+  <!-- Audit log -->
+  <div class="panel">
+    <div class="panel-head">
+      <h3 class="panel-title">Recent Login Activity</h3>
+      <span class="panel-sub">Last 30 events</span>
+    </div>
+    <div class="table-wrap" style="max-height: 480px; overflow-y: auto;">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>User</th>
+            <th>Result</th>
+            <th>IP</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for a in audit %}
+          <tr>
+            <td style="font-family: var(--font-mono); font-size: 11px; color: var(--muted);">{{ a.timestamp[:19].replace('T', ' ') }}</td>
+            <td>{{ a.username or '—' }}</td>
+            <td>
+              {% if a.success %}
+                <span class="tag tag-paid">OK</span>
+              {% else %}
+                <span class="tag" style="background: var(--bad-soft); color: var(--bad);">Failed</span>
+              {% endif %}
+            </td>
+            <td style="font-family: var(--font-mono); font-size: 11px; color: var(--muted);">{{ a.ip_address or '—' }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- Reset Password Modal -->
+<div id="reset-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:1000; align-items:center; justify-content:center;">
+  <div class="panel" style="max-width: 400px; width: 90%;">
+    <div class="panel-head">
+      <h3 class="panel-title">Reset Password</h3>
+    </div>
+    <form id="reset-form" method="post" class="form">
+      <p style="padding: 0 0 16px; color: var(--muted); font-size: 13px;">
+        Resetting password for: <strong id="reset-user" style="color: var(--ink);"></strong>
+      </p>
+      <div class="form-row">
+        <label class="field">
+          <span class="field-label">New Password</span>
+          <input type="text" name="new_password" required minlength="6" value="changeme123" />
+          <span class="hint">User will be forced to change on next login.</span>
+        </label>
+      </div>
+      <div class="form-row form-actions">
+        <button type="submit" class="btn btn-primary">Reset Password</button>
+        <button type="button" class="btn btn-ghost" onclick="document.getElementById('reset-modal').style.display='none'">Cancel</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+function showResetPwd(uid, username) {
+  const modal = document.getElementById('reset-modal');
+  const form = document.getElementById('reset-form');
+  document.getElementById('reset-user').textContent = username;
+  form.action = '/users/' + uid + '/reset-password';
+  modal.style.display = 'flex';
+}
+</script>
+{% endblock %}

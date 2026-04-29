@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{% block title %}Management Dashboard{% endblock %}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700&family=Geist:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
+  <script src="https://cdn.jsdelivr.net/npm/apexcharts"></script>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="topbar-left">
+        <div class="brand">
+          <span class="brand-mark">◆</span>
+          <span class="brand-text">Management<span class="brand-accent">.</span>Dashboard</span>
+        </div>
+        <nav class="topnav">
+          <a href="/" class="topnav-link {% if request.path == '/' %}active{% endif %}">Dashboard</a>
+          {% if session.get('role') == 'admin' %}
+            <a href="/settings" class="topnav-link {% if request.path == '/settings' %}active{% endif %}">Settings</a>
+            <a href="/users" class="topnav-link {% if request.path.startswith('/users') %}active{% endif %}">Users</a>
+            <a href="/diagnostics" class="topnav-link {% if request.path == '/diagnostics' %}active{% endif %}">Diagnostics</a>
+          {% endif %}
+        </nav>
+      </div>
+      <div class="topbar-right">
+        {% if request.path != '/login' and session.get('uid') %}
+          <div id="connection-pill" class="pill"><span class="pill-dot"></span><span class="pill-text">Loading…</span></div>
+          <button id="sync-button" class="btn btn-primary">Sync Now</button>
+          <div class="user-menu">
+            <button class="user-menu-btn" id="user-menu-btn">
+              <span class="user-avatar">{{ session.get('name', 'U')[0] | upper }}</span>
+              <span class="user-name">{{ session.get('name', 'User') }}</span>
+              <svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor">
+                <path d="M1 3l4 4 4-4" stroke="currentColor" stroke-width="1.5" fill="none"/>
+              </svg>
+            </button>
+            <div class="user-menu-dropdown" id="user-menu-dropdown">
+              <div class="user-menu-header">
+                <div style="font-weight:500; color:var(--ink);">{{ session.get('name') }}</div>
+                <div style="font-family: var(--font-mono); font-size: 11px; color: var(--muted); margin-top: 2px;">
+                  {{ session.get('username') }} · {{ session.get('role') }}
+                </div>
+              </div>
+              <a href="/change-password" class="user-menu-item">Change password</a>
+              <a href="/logout" class="user-menu-item user-menu-item-danger">Sign out</a>
+            </div>
+          </div>
+        {% endif %}
+      </div>
+    </header>
+    <main class="content">
+      {% block content %}{% endblock %}
+    </main>
+    <footer class="footer">
+      <span>QuickBooks Management Dashboard · Click anywhere to drill down</span>
+      <span id="last-sync-text">Last sync: —</span>
+    </footer>
+  </div>
+  {% block scripts %}{% endblock %}
+  <script>
+    // User menu dropdown
+    (function() {
+      const btn = document.getElementById('user-menu-btn');
+      const dd = document.getElementById('user-menu-dropdown');
+      if (btn && dd) {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          dd.classList.toggle('open');
+        });
+        document.addEventListener('click', (e) => {
+          if (!e.target.closest('.user-menu')) dd.classList.remove('open');
+        });
+      }
+    })();
+  </script>
+</body>
+</html>

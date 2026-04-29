@@ -1,0 +1,284 @@
+{% extends "base.html" %}
+{% block title %}Diagnostics · Dashboard{% endblock %}
+
+{% block content %}
+<section class="hero">
+  <div>
+    <div class="eyebrow">Admin Diagnostics</div>
+    <h1 class="hero-title">Data Health Check</h1>
+    <p class="hero-sub">Raw view of synced QuickBooks data — use this to debug when P&L numbers don't match QB.</p>
+  </div>
+</section>
+
+<div class="grid-2">
+  <div class="panel">
+    <div class="panel-head">
+      <h3 class="panel-title">Account Types Summary</h3>
+      <span class="panel-sub">What QB is actually returning</span>
+    </div>
+    <div class="table-wrap">
+      <table class="data-table">
+        <thead><tr><th>Type</th><th class="num">Count</th><th class="num">Balance</th></tr></thead>
+        <tbody>
+          {% for row in diag.account_type_summary %}
+          <tr>
+            <td><code style="font-family:var(--font-mono); background:var(--paper-2); padding:2px 8px; border-radius:3px; font-size:12px;">{{ row.type }}</code></td>
+            <td class="num">{{ row.count }}</td>
+            <td class="num">₹{{ '{:,.2f}'.format(row.total_balance) }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-head">
+      <h3 class="panel-title">Transaction Table Counts</h3>
+      <span class="panel-sub">How many rows per source</span>
+    </div>
+    <div class="table-wrap">
+      <table class="data-table">
+        <thead><tr><th>Table</th><th class="num">Rows</th></tr></thead>
+        <tbody>
+          {% for k, v in diag.table_counts.items() %}
+          <tr>
+            <td><code style="font-family:var(--font-mono); background:var(--paper-2); padding:2px 8px; border-radius:3px; font-size:12px;">{{ k }}</code></td>
+            <td class="num">{{ v }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="grid-2">
+  <div class="panel">
+    <div class="panel-head">
+      <h3 class="panel-title">Item Account Resolution</h3>
+      <span class="panel-sub">Do items have P&L account mappings?</span>
+    </div>
+    <div style="padding: 20px;">
+      {% set itm = diag.item_resolution_status %}
+      <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px;">
+        <div>
+          <div class="meta-label">Total Items</div>
+          <div style="font-family:var(--font-display); font-size:24px; font-weight:500;">{{ itm.total_items }}</div>
+        </div>
+        <div>
+          <div class="meta-label">With Income A/c</div>
+          <div style="font-family:var(--font-display); font-size:24px; font-weight:500; color: {% if itm.with_income_account == itm.total_items %}var(--good){% else %}var(--warn){% endif %};">{{ itm.with_income_account }}</div>
+        </div>
+        <div>
+          <div class="meta-label">With Expense A/c</div>
+          <div style="font-family:var(--font-display); font-size:24px; font-weight:500; color: {% if itm.with_expense_account > 0 %}var(--good){% else %}var(--bad){% endif %};">{{ itm.with_expense_account }}</div>
+        </div>
+        <div>
+          <div class="meta-label">With COGS A/c</div>
+          <div style="font-family:var(--font-display); font-size:24px; font-weight:500; color: {% if itm.with_cogs_account > 0 %}var(--good){% else %}var(--bad){% endif %};">{{ itm.with_cogs_account }}</div>
+        </div>
+      </div>
+      <div style="margin-top: 20px; padding: 14px; background: var(--paper-2); border-radius: 6px; font-size: 12px; color: var(--muted); font-family: var(--font-mono); line-height: 1.6;">
+        If "With COGS A/c" is 0 for an inventory business, item-line sales/purchases won't resolve to P&L. Check the Item sample below to see exact field values.
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-head">
+      <h3 class="panel-title">Date Ranges</h3>
+      <span class="panel-sub">Span of synced transactions</span>
+    </div>
+    <div style="padding: 20px;">
+      <div style="margin-bottom: 16px;">
+        <div class="meta-label" style="margin-bottom: 4px;">Invoices</div>
+        <div style="font-family: var(--font-mono); font-size: 14px;">{{ diag.invoice_date_range.min or 'None' }} → {{ diag.invoice_date_range.max or 'None' }}</div>
+      </div>
+      <div>
+        <div class="meta-label" style="margin-bottom: 4px;">Bills</div>
+        <div style="font-family: var(--font-mono); font-size: 14px;">{{ diag.bill_date_range.min or 'None' }} → {{ diag.bill_date_range.max or 'None' }}</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="panel-head">
+    <h3 class="panel-title">Journal Entry Accounts — Top 25 by Activity</h3>
+    <span class="panel-sub">If Depreciation is listed here but NOT FOUND in master, that's the bug</span>
+  </div>
+  <div class="table-wrap" style="max-height: 520px; overflow-y: auto;">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Account Name (as stored in JE)</th>
+          <th>Type in Master</th>
+          <th class="num">Total Debit</th>
+          <th class="num">Total Credit</th>
+          <th class="num">Lines</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in diag.je_accounts_top %}
+        <tr>
+          <td>{{ r.account or '(blank)' }}</td>
+          <td>
+            {% if r.acc_master_type == 'NOT FOUND IN MASTER' %}
+              <span class="tag" style="background: var(--bad-soft); color: var(--bad);">{{ r.acc_master_type }}</span>
+            {% elif r.acc_master_type in ['Expense', 'OtherExpense', 'CostOfGoodsSold'] %}
+              <span class="tag tag-paid">{{ r.acc_master_type }}</span>
+            {% elif r.acc_master_type in ['Income', 'OtherIncome'] %}
+              <span class="tag" style="background: var(--accent-soft); color: var(--accent);">{{ r.acc_master_type }}</span>
+            {% else %}
+              <code style="font-family:var(--font-mono); font-size:11px; background:var(--paper-2); padding:2px 6px; border-radius:3px;">{{ r.acc_master_type }}</code>
+            {% endif %}
+          </td>
+          <td class="num">₹{{ '{:,.2f}'.format(r.total_debit) }}</td>
+          <td class="num">₹{{ '{:,.2f}'.format(r.total_credit) }}</td>
+          <td class="num">{{ r.lines }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="panel-head">
+    <h3 class="panel-title">Bill Lines — Top 25 by Amount</h3>
+    <span class="panel-sub">Shows both expense lines (source=expense) and item lines (source=item)</span>
+  </div>
+  <div class="table-wrap" style="max-height: 520px; overflow-y: auto;">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Source</th>
+          <th>Expense Account</th>
+          <th>Item (for item lines)</th>
+          <th class="num">Total Amount</th>
+          <th class="num">Lines</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in diag.bill_lines_summary %}
+        <tr>
+          <td>
+            {% if r.source_type == 'item' %}
+              <span class="tag" style="background: var(--accent-soft); color: var(--accent);">item</span>
+            {% else %}
+              <span class="tag tag-bill">expense</span>
+            {% endif %}
+          </td>
+          <td>{{ r.expense_account or '(null)' }}</td>
+          <td>{{ r.item_name or '—' }}</td>
+          <td class="num">₹{{ '{:,.2f}'.format(r.total) }}</td>
+          <td class="num">{{ r.lines }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{% if diag.unresolved_bill_lines %}
+<div class="panel">
+  <div class="panel-head">
+    <h3 class="panel-title">Unresolved Bill Lines</h3>
+    <span class="panel-sub" style="color: var(--bad);">These lines have amounts but no expense account matched — missed from P&L</span>
+  </div>
+  <div class="table-wrap">
+    <table class="data-table">
+      <thead><tr><th>Expense Account</th><th>Item</th><th class="num">Total</th><th class="num">Lines</th></tr></thead>
+      <tbody>
+        {% for r in diag.unresolved_bill_lines %}
+        <tr>
+          <td>{{ r.account or '(null)' }}</td>
+          <td>{{ r.item or '—' }}</td>
+          <td class="num" style="color: var(--bad);">₹{{ '{:,.2f}'.format(r.total) }}</td>
+          <td class="num">{{ r.lines }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
+<div class="panel">
+  <div class="panel-head">
+    <h3 class="panel-title">Item Sample (first 25)</h3>
+    <span class="panel-sub">See if QB is returning account mappings for items</span>
+  </div>
+  <div class="table-wrap" style="max-height: 520px; overflow-y: auto;">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Item Name</th>
+          <th>Type</th>
+          <th>Income A/c</th>
+          <th>Expense A/c</th>
+          <th>COGS A/c</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in diag.item_sample %}
+        <tr>
+          <td>{{ r.name }}</td>
+          <td><code style="font-family:var(--font-mono); font-size:11px;">{{ r.type or '—' }}</code></td>
+          <td style="color: {% if r.income_account %}var(--ink){% else %}var(--muted){% endif %};">{{ r.income_account or '—' }}</td>
+          <td style="color: {% if r.expense_account %}var(--ink){% else %}var(--muted){% endif %};">{{ r.expense_account or '—' }}</td>
+          <td style="color: {% if r.cogs_account %}var(--ink){% else %}var(--muted){% endif %};">{{ r.cogs_account or '—' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="panel-head">
+    <h3 class="panel-title">Top Expense Accounts — Resolved (all-time)</h3>
+    <span class="panel-sub">Final aggregated expenses after all joins</span>
+  </div>
+  <div class="table-wrap">
+    <table class="data-table">
+      <thead><tr><th>Account</th><th class="num">Amount</th></tr></thead>
+      <tbody>
+        {% for row in diag.top_expense_accounts_all_time %}
+        <tr>
+          <td>{{ row.account }}</td>
+          <td class="num">₹{{ '{:,.2f}'.format(row.amount) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="panel-head">
+    <h3 class="panel-title">All Accounts</h3>
+    <span class="panel-sub">{{ diag.accounts|length }} accounts synced from QuickBooks</span>
+  </div>
+  <div class="table-wrap" style="max-height: 520px; overflow-y: auto;">
+    <table class="data-table">
+      <thead>
+        <tr><th>Type</th><th>Name</th><th>Active</th><th class="num">Balance</th></tr>
+      </thead>
+      <tbody>
+        {% for a in diag.accounts %}
+        <tr>
+          <td><code style="font-family:var(--font-mono); font-size:11px; background:var(--paper-2); padding:2px 6px; border-radius:3px;">{{ a.type or '(null)' }}</code></td>
+          <td>{{ a.name }}</td>
+          <td>{% if a.active %}<span class="tag tag-paid">Active</span>{% else %}<span class="tag" style="background: var(--bad-soft); color: var(--bad);">Inactive</span>{% endif %}</td>
+          <td class="num" style="color: {% if a.balance == 0 %}var(--muted){% elif a.balance < 0 %}var(--bad){% else %}var(--ink){% endif %};">
+            {% if a.balance == 0 %}—{% else %}₹{{ '{:,.2f}'.format(a.balance) }}{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

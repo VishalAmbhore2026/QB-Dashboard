@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% block title %}Settings · Management Dashboard{% endblock %}
+{% block content %}
+<section class="hero">
+  <div>
+    <div class="eyebrow">Configuration</div>
+    <h1 class="hero-title">Connection &amp; Sync Settings</h1>
+    <p class="hero-sub">Configure how the dashboard talks to QuickBooks Desktop.</p>
+  </div>
+</section>
+
+{% if message %}<div class="alert alert-success">{{ message }}</div>{% endif %}
+
+<div class="grid-2">
+  <div class="panel">
+    <div class="panel-head"><h3 class="panel-title">Settings</h3></div>
+    <form method="post" class="form">
+      <div class="form-row">
+        <label class="toggle">
+          <input type="checkbox" name="demo_mode" {% if cfg.demo_mode %}checked{% endif %} />
+          <span class="toggle-track"><span class="toggle-thumb"></span></span>
+          <span class="toggle-label">
+            <strong>Demo Mode</strong>
+            <span class="hint">Use fake data. Turn OFF to connect real QuickBooks.</span>
+          </span>
+        </label>
+      </div>
+      <div class="form-row">
+        <label class="field">
+          <span class="field-label">Company Label</span>
+          <input type="text" name="company_label" value="{{ cfg.company_label }}" />
+        </label>
+      </div>
+      <div class="form-row">
+        <label class="field">
+          <span class="field-label">QuickBooks ODBC DSN Name</span>
+          <input type="text" id="dsn_name" name="dsn_name" value="{{ cfg.dsn_name }}" placeholder="e.g. QuickBooks Data" />
+        </label>
+        <button type="button" id="test-btn" class="btn btn-ghost">Test Connection</button>
+        <div id="test-result" class="test-result"></div>
+      </div>
+      <div class="form-row">
+        <label class="field">
+          <span class="field-label">Auto-refresh interval (minutes)</span>
+          <input type="number" name="sync_interval_minutes" value="{{ cfg.sync_interval_minutes }}" min="5" max="1440" />
+        </label>
+      </div>
+      <div class="form-row form-actions">
+        <button type="submit" class="btn btn-primary">Save Settings</button>
+        <a href="/" class="btn btn-ghost">Back to Dashboard</a>
+      </div>
+    </form>
+  </div>
+  <div class="panel panel-guide">
+    <div class="panel-head"><h3 class="panel-title">Current Status</h3></div>
+    <div class="callout">
+      <ul>
+        <li>Last sync: <code>{{ cfg.last_sync or 'Never' }}</code></li>
+        <li>Status: <code>{{ cfg.last_sync_status }}</code></li>
+        <li>Mode: <code>{{ 'Demo' if cfg.demo_mode else 'Live QuickBooks' }}</code></li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<script>
+document.getElementById('test-btn').addEventListener('click', async () => {
+  const dsn = document.getElementById('dsn_name').value.trim();
+  const resultEl = document.getElementById('test-result');
+  resultEl.className = 'test-result testing';
+  resultEl.textContent = 'Testing…';
+  try {
+    const r = await fetch('/api/test-connection', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({dsn_name: dsn})
+    });
+    const data = await r.json();
+    if (data.ok) {
+      resultEl.className = 'test-result ok';
+      let html = '✓ Connected. ';
+      if (data.info.company_name) html += 'Company: <strong>' + data.info.company_name + '</strong>. ';
+      ['customer_count', 'invoice_count', 'vendor_count', 'bill_count'].forEach(k => {
+        if (data.info[k] !== null && data.info[k] !== undefined) {
+          html += k.replace('_count', 's') + ': ' + data.info[k] + '. ';
+        }
+      });
+      resultEl.innerHTML = html;
+    } else {
+      resultEl.className = 'test-result err';
+      resultEl.textContent = '✗ ' + data.message;
+    }
+  } catch (e) {
+    resultEl.className = 'test-result err';
+    resultEl.textContent = '✗ ' + e.message;
+  }
+});
+</script>
+{% endblock %}
