@@ -241,7 +241,7 @@ async function loadVendors() {
   tb.innerHTML = data.length === 0
     ? `<tr><td colspan="3" class="empty-td">No vendor transactions in this period</td></tr>`
     : data.map(r => `<tr class="clickable" data-drill='${JSON.stringify({level:"vendor", label: r.vendor, payload: r.vendor})}'>
-        <td>${r.vendor}</td><td class="num">${r.transactions}</td><td class="num">${fmtFull(r.amount)}</td>
+        <td>${r.vendor}</td><td class="num">${r.transactions}</td><td class="num">${fmtFull(r.amount)}</td><td class="num">${fmtFull(r.balance || 0)}</td>
       </tr>`).join('');
   tb.querySelectorAll('tr.clickable').forEach(tr => {
     tr.addEventListener('click', () => drillTo(JSON.parse(tr.dataset.drill)));

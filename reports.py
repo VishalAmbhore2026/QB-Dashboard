@@ -1,25 +1,18 @@
 """
 Financial reports — clean rewrite using Virtual General Ledger approach.
 
+PATCH NOTES (this revision):
+  - Added _fallback_income_account() helper.
+  - Added 'invoice_line_fallback' GL source so invoice lines whose item has
+    no resolved income_account still post revenue (against a fallback Income
+    account, e.g. "Construction Income"). This recovers revenue from items
+    like "Framing", "Removal", "Installation" that the QBXML importer left
+    with income_account = NULL.
+  - Added data_quality_check() helper to flag missing payroll/inventory data.
+
 The core idea: build ONE function (`compute_gl_movements`) that pulls every
 debit/credit movement from every transaction type. Both P&L and Balance Sheet
-derive from that single GL. If the GL is correct, double-entry math makes
-BS balance automatically and P&L matches QB's own report to the penny.
-
-Movement sources (each with proper debit/credit split):
-  1. Journal lines (direct)
-  2. Invoice lines (credit income via item) + Invoice header (debit AR)
-  3. Bill lines - expense (debit expense) + Bill lines - item (debit
-     item's cogs/expense account) + Bill header (credit AP)
-  4. Check lines - expense + item (debit expense) + Check header (credit bank)
-  5. CC Charge lines - expense + item (debit expense) + CC header (credit CC)
-  6. Deposits (debit bank)
-  7. Receive Payment (debit deposit_account, credit AR)
-  8. Bill Payment (debit AP, credit bank)
-
-Sign convention:
-  - Debit-balance accounts (Asset, Expense): balance = debits - credits
-  - Credit-balance accounts (Liability, Equity, Income): balance = credits - debits
+derive from that single GL.
 """
 import sqlite3
 from datetime import datetime, date, timedelta
@@ -119,8 +112,8 @@ ASSET_TYPES = {"Bank", "AccountsReceivable", "OtherCurrentAsset",
 LIAB_TYPES = {"AccountsPayable", "CreditCard", "OtherCurrentLiability",
               "LongTermLiability"}
 EQUITY_TYPES = {"Equity"}
-DEBIT_NORMAL_TYPES = ASSET_TYPES | EXPENSE_TYPES  # balance = dr - cr
-CREDIT_NORMAL_TYPES = LIAB_TYPES | EQUITY_TYPES | INCOME_TYPES  # balance = cr - dr
+DEBIT_NORMAL_TYPES = ASSET_TYPES | EXPENSE_TYPES
+CREDIT_NORMAL_TYPES = LIAB_TYPES | EQUITY_TYPES | INCOME_TYPES
 
 
 # ===================== Helpers =====================
@@ -150,12 +143,41 @@ def _first_account_of_type(conn, account_type):
     return row[0] if row else None
 
 
+def _fallback_income_account(conn):
+    """
+    Find a reasonable Income-type account to use as the fallback for invoice
+    lines whose item has no resolved income_account (importer omission).
+
+    Looks in priority order: 'Construction Income' (QB Sample), then 'Sales',
+    'Service Income', 'Service Revenue', 'Revenue', then ANY active Income
+    account. Returns None if no Income account exists at all.
+    """
+    cur = conn.cursor()
+    for candidate in ('Construction Income', 'Sales', 'Service Income',
+                      'Service Revenue', 'Revenue'):
+        cur.execute("""
+            SELECT full_name FROM account
+            WHERE account_type = 'Income' AND is_active = 1
+              AND full_name = ? LIMIT 1
+        """, (candidate,))
+        row = cur.fetchone()
+        if row:
+            return row[0]
+    cur.execute("""
+        SELECT full_name FROM account
+        WHERE account_type = 'Income' AND is_active = 1
+        ORDER BY full_name LIMIT 1
+    """)
+    row = cur.fetchone()
+    return row[0] if row else None
+
+
 # ===================== THE VIRTUAL GENERAL LEDGER =====================
 
-def _gl_sql_parts(ar_account, ap_account):
+def _gl_sql_parts(ar_account, ap_account, fallback_income=None):
     """
-    Build the list of (name, sql, needs_ar_ap_params) tuples for every
-    GL movement source. Each source returns rows of:
+    Build the list of (name, sql, needs_param_tag) tuples for every GL movement
+    source. Each source returns rows of:
       (account_name, debit, credit, txn_date, source_tag, txn_id)
     """
     parts = []
@@ -181,11 +203,30 @@ def _gl_sql_parts(ar_account, ap_account):
 
     # ---- 2b. Invoice HEADER — debit AR (offset to income lines) ----
     if ar_account:
-        parts.append(("invoice_header_ar", f"""
+        parts.append(("invoice_header_ar", """
             SELECT ? AS account_name, inv.subtotal AS debit, 0 AS credit,
                    inv.txn_date, 'invoice_ar' AS source, inv.txn_id
             FROM invoice inv
         """, "ar"))
+
+    # ---- 2c. NEW: Invoice lines fallback — items with NULL income_account ----
+    # This recovers revenue for items the QBXML importer couldn't fully resolve
+    # (e.g. Framing, Removal, Installation in QB Sample). Excludes subtotal /
+    # discount / payment item types and zero-amount lines.
+    if fallback_income:
+        parts.append(("invoice_line_fallback", """
+            SELECT ? AS account_name, 0 AS debit, il.amount AS credit,
+                   inv.txn_date, 'invoice_line_fb' AS source, il.txn_id
+            FROM invoice_line il
+            JOIN invoice inv ON inv.txn_id = il.txn_id
+            LEFT JOIN item i ON i.full_name = il.item_name
+            WHERE (i.income_account IS NULL OR i.income_account = '')
+              AND il.item_name IS NOT NULL AND il.item_name != ''
+              AND il.amount > 0
+              AND COALESCE(i.item_type, '') NOT IN
+                  ('ItemSubtotal', 'ItemDiscount', 'ItemPayment',
+                   'ItemSalesTax', 'ItemSalesTaxGroup', 'ItemGroup')
+        """, "fallback_income"))
 
     # ---- 3a. Bill EXPENSE lines — debit expense account directly ----
     parts.append(("bill_line_expense", """
@@ -211,7 +252,7 @@ def _gl_sql_parts(ar_account, ap_account):
 
     # ---- 3c. Bill HEADER — credit AP ----
     if ap_account:
-        parts.append(("bill_header_ap", f"""
+        parts.append(("bill_header_ap", """
             SELECT ? AS account_name, 0 AS debit, b.amount AS credit,
                    b.txn_date, 'bill_ap' AS source, b.txn_id
             FROM bill b
@@ -277,7 +318,7 @@ def _gl_sql_parts(ar_account, ap_account):
         WHERE cc.credit_card_account IS NOT NULL AND cc.credit_card_account != ''
     """))
 
-    # ---- 6. Deposits — debit bank (offset typically from receive_payment or JE) ----
+    # ---- 6. Deposits — debit bank ----
     parts.append(("deposit", """
         SELECT d.bank_account, d.amount AS debit, 0 AS credit,
                d.txn_date, 'deposit' AS source, d.txn_id
@@ -295,7 +336,7 @@ def _gl_sql_parts(ar_account, ap_account):
 
     # ---- 7b. Receive Payment — credit AR ----
     if ar_account:
-        parts.append(("rp_credit_ar", f"""
+        parts.append(("rp_credit_ar", """
             SELECT ? AS account_name, 0 AS debit, rp.amount AS credit,
                    rp.txn_date, 'rp_ar' AS source, rp.txn_id
             FROM receive_payment rp
@@ -311,7 +352,7 @@ def _gl_sql_parts(ar_account, ap_account):
 
     # ---- 8b. Bill Payment — debit AP ----
     if ap_account:
-        parts.append(("bp_debit_ap", f"""
+        parts.append(("bp_debit_ap", """
             SELECT ? AS account_name, bp.amount AS debit, 0 AS credit,
                    bp.txn_date, 'bp_ap' AS source, bp.txn_id
             FROM bill_payment bp
@@ -323,11 +364,12 @@ def _gl_sql_parts(ar_account, ap_account):
 def _iter_gl_movements(conn, from_date=None, to_date=None, as_of_date=None):
     """
     Yield (account_name, debit, credit, txn_date, source, txn_id) tuples
-    for every movement in the virtual GL. Optionally filtered by date.
+    for every movement in the virtual GL.
     """
     ar_account = _first_account_of_type(conn, "AccountsReceivable")
     ap_account = _first_account_of_type(conn, "AccountsPayable")
-    parts = _gl_sql_parts(ar_account, ap_account)
+    fallback_income = _fallback_income_account(conn)
+    parts = _gl_sql_parts(ar_account, ap_account, fallback_income)
 
     cur = conn.cursor()
     for part in parts:
@@ -335,7 +377,6 @@ def _iter_gl_movements(conn, from_date=None, to_date=None, as_of_date=None):
         sql = part[1]
         needs_param = part[2] if len(part) > 2 else None
 
-        # Build WHERE date clause
         where_clauses = []
         extra_params = []
         if from_date is not None:
@@ -348,15 +389,15 @@ def _iter_gl_movements(conn, from_date=None, to_date=None, as_of_date=None):
             where_clauses.append(" AND txn_date <= ?")
             extra_params.append(str(as_of_date))
 
-        # Wrap the inner sql so our additions compose correctly
         wrapped = f"SELECT * FROM ({sql}) WHERE 1=1 {''.join(where_clauses)}"
 
-        # Build param list
         params = []
         if needs_param == "ar" and ar_account:
             params.append(ar_account)
         elif needs_param == "ap" and ap_account:
             params.append(ap_account)
+        elif needs_param == "fallback_income" and fallback_income:
+            params.append(fallback_income)
         params.extend(extra_params)
 
         try:
@@ -364,38 +405,22 @@ def _iter_gl_movements(conn, from_date=None, to_date=None, as_of_date=None):
             for row in cur.fetchall():
                 yield row
         except Exception as e:
-            # Don't fail the whole GL for one broken source
             print(f"[reports] GL source '{name}' failed: {e}")
             continue
 
 
 def compute_gl_balances(conn, as_of_date):
-    """
-    Return {account_name: net_balance} for all accounts as of the date.
-    net_balance = sum(debit) - sum(credit)
-    (positive for debit-balance accounts; negative for credit-balance accounts)
-
-    Includes account.balance from the chart-of-accounts as an opening seed
-    ONLY for Bank / CreditCard / FixedAsset / OtherCurrentAsset / OtherAsset /
-    LongTermLiability / OtherCurrentLiability / Equity accounts whose
-    balance field is non-zero AND which have no corresponding GL movements.
-    This handles demo-data seeding and QB files where opening balances
-    weren't recorded as journal entries.
-    """
     balances = {}
     for acc, debit, credit, _dt, _src, _tid in _iter_gl_movements(conn, as_of_date=as_of_date):
         if not acc:
             continue
         balances[acc] = balances.get(acc, 0) + (debit or 0) - (credit or 0)
 
-    # Add seeded opening balances for BS accounts not already covered by GL
     cur = conn.cursor()
     cur.execute("""
         SELECT full_name, account_type, balance
         FROM account
-        WHERE is_active = 1
-          AND balance IS NOT NULL
-          AND balance != 0
+        WHERE is_active = 1 AND balance IS NOT NULL AND balance != 0
           AND account_type IN ('Bank', 'CreditCard', 'FixedAsset',
                                'OtherCurrentAsset', 'OtherAsset',
                                'LongTermLiability', 'OtherCurrentLiability',
@@ -403,27 +428,18 @@ def compute_gl_balances(conn, as_of_date):
     """)
     for name, atype, stored_bal in cur.fetchall():
         if name in balances and abs(balances[name]) > 0.01:
-            continue  # already has GL activity; don't double-count
-        # Translate the QB-stored balance into our dr-cr convention
-        # Bank/FixedAsset/OtherAsset/OtherCurrentAsset = debit-balance (positive as-is)
-        # CreditCard/Liability/Equity = credit-balance (store as negative)
+            continue
         if atype in ("Bank", "FixedAsset", "OtherCurrentAsset", "OtherAsset"):
             balances[name] = float(stored_bal)
         else:
-            # Liabilities / Equity / CC: QB stores as positive; we store negative
-            # (QB's CC balance is sometimes already negative when owed money — handle either)
             if stored_bal > 0:
                 balances[name] = -float(stored_bal)
             else:
                 balances[name] = float(stored_bal)
-
     return balances
 
 
 def compute_gl_period(conn, from_date, to_date):
-    """
-    Return {account_name: {'debit': x, 'credit': y}} aggregated over the period.
-    """
     totals = {}
     for acc, debit, credit, _dt, _src, _tid in _iter_gl_movements(conn, from_date=from_date, to_date=to_date):
         if not acc:
@@ -438,12 +454,6 @@ def compute_gl_period(conn, from_date, to_date):
 # ===================== P&L =====================
 
 def profit_loss(conn, from_date, to_date):
-    """
-    P&L derived from the virtual GL. For each account with P&L-type classification,
-    sum net movement for the period.
-      - Income/OtherIncome: net = credits - debits (positive = revenue)
-      - Expense/OtherExpense/CostOfGoodsSold: net = debits - credits (positive = expense)
-    """
     acc_types = _get_account_types_map(conn)
     period = compute_gl_period(conn, from_date, to_date)
 
@@ -457,8 +467,7 @@ def profit_loss(conn, from_date, to_date):
         atype = acc_types.get(acc)
         if not atype:
             continue
-        dr = totals["debit"]
-        cr = totals["credit"]
+        dr, cr = totals["debit"], totals["credit"]
 
         if atype == "Income":
             amt = cr - dr
@@ -481,7 +490,6 @@ def profit_loss(conn, from_date, to_date):
             if abs(amt) > 0.01:
                 other_expense_rows.append({"label": acc, "amount": round(amt, 2)})
 
-    # Sort each section by amount descending
     for lst in (revenue_rows, other_income_rows, cogs_rows, opex_rows, other_expense_rows):
         lst.sort(key=lambda r: -r["amount"])
 
@@ -499,8 +507,7 @@ def profit_loss(conn, from_date, to_date):
     net_margin_pct = (net_income / total_revenue * 100) if total_revenue else 0
 
     return {
-        "from": str(from_date),
-        "to": str(to_date),
+        "from": str(from_date), "to": str(to_date),
         "total_revenue": round(total_revenue, 2),
         "revenue_rows": revenue_rows,
         "cogs_total": round(total_cogs, 2),
@@ -537,10 +544,6 @@ def other_income_total(conn, from_date, to_date):
 
 
 def expense_by_account(conn, from_date, to_date):
-    """
-    Return {account_name: total_amount} for expense-type accounts only.
-    Used by the expense-categories endpoint.
-    """
     acc_types = _get_account_types_map(conn)
     period = compute_gl_period(conn, from_date, to_date)
     out = {}
@@ -556,32 +559,18 @@ def expense_by_account(conn, from_date, to_date):
 # ===================== Balance Sheet =====================
 
 def balance_sheet(conn, as_of_date):
-    """
-    Balance Sheet from the virtual GL.
-    Includes ALL non-zero accounts, classified by type.
-    Adds synthetic "Net Income (YTD)" equity line (Jan 1 of as-of year to date).
-    """
     acc_types = _get_account_types_map(conn)
     gl_balances = compute_gl_balances(conn, as_of_date)
 
-    # Also get the account_type for every account including inactive ones,
-    # so we include balances even for accounts we missed above
     cur = conn.cursor()
-    cur.execute("""
-        SELECT full_name, account_type FROM account WHERE is_active = 1
-    """)
+    cur.execute("SELECT full_name, account_type FROM account WHERE is_active = 1")
     active_accounts = {row[0]: row[1] for row in cur.fetchall()}
 
     sections = {
-        "Current Assets": [],
-        "Fixed Assets": [],
-        "Other Assets": [],
-        "Current Liabilities": [],
-        "Long-Term Liabilities": [],
-        "Equity": [],
+        "Current Assets": [], "Fixed Assets": [], "Other Assets": [],
+        "Current Liabilities": [], "Long-Term Liabilities": [], "Equity": [],
     }
 
-    # Process every account we know about, not just those in GL
     all_acc_names = set(gl_balances.keys()) | set(active_accounts.keys())
 
     for name in all_acc_names:
@@ -589,15 +578,10 @@ def balance_sheet(conn, as_of_date):
         if not atype:
             continue
         if atype in INCOME_TYPES or atype in EXPENSE_TYPES:
-            continue  # P&L accounts don't go on BS
+            continue
 
         raw = gl_balances.get(name, 0)
-
-        # Display sign: flip for credit-normal accounts so all BS values show positive
-        if atype in DEBIT_NORMAL_TYPES:
-            display = raw
-        else:
-            display = -raw
+        display = raw if atype in DEBIT_NORMAL_TYPES else -raw
 
         if abs(display) < 0.01:
             continue
@@ -617,12 +601,9 @@ def balance_sheet(conn, as_of_date):
         elif atype == "Equity":
             sections["Equity"].append(entry)
 
-    # Sort each section alphabetically for stable display
     for lst in sections.values():
         lst.sort(key=lambda x: x["name"])
 
-    # Add synthetic "Net Income (YTD)" line to Equity (QB convention).
-    # YTD = Jan 1 of the year of as_of_date through as_of_date.
     try:
         year_start = date(as_of_date.year, 1, 1)
     except AttributeError:
@@ -632,8 +613,7 @@ def balance_sheet(conn, as_of_date):
     ytd_net = ytd_pnl["net_income"]
     if abs(ytd_net) > 0.01:
         sections["Equity"].append({
-            "name": "Net Income (YTD)",
-            "type": "Equity",
+            "name": "Net Income (YTD)", "type": "Equity",
             "balance": round(ytd_net, 2),
         })
 
@@ -644,8 +624,7 @@ def balance_sheet(conn, as_of_date):
 
     return {
         "as_of": str(as_of_date),
-        "sections": sections,
-        "totals": totals,
+        "sections": sections, "totals": totals,
         "total_assets": round(total_assets, 2),
         "total_liabilities": round(total_liab, 2),
         "total_equity": round(total_equity, 2),
@@ -694,15 +673,9 @@ def cash_out(conn, from_date, to_date):
 # ===================== KPIs =====================
 
 def kpi_snapshot(conn, from_date, to_date):
-    """Headline KPI tiles for the dashboard."""
-    # Cash from BS-style computation so it's accurate
     gl_bal = compute_gl_balances(conn, to_date)
     acc_types = _get_account_types_map(conn)
-    cash = 0
-    for name, bal in gl_bal.items():
-        t = acc_types.get(name)
-        if t == "Bank":
-            cash += bal  # bank is debit-normal, balance is positive
+    cash = sum(b for n, b in gl_bal.items() if acc_types.get(n) == "Bank")
 
     ar = _scalar(conn, "SELECT COALESCE(SUM(balance_remaining), 0) FROM invoice WHERE is_paid = 0")
     ap = _scalar(conn, "SELECT COALESCE(SUM(balance_remaining), 0) FROM bill WHERE is_paid = 0")
@@ -729,19 +702,12 @@ def kpi_snapshot(conn, from_date, to_date):
 
     return {
         "from": str(from_date), "to": str(to_date),
-        "cash": round(cash, 2),
-        "ar": round(ar, 2),
-        "ap": round(ap, 2),
-        "revenue": round(rev, 2),
-        "expenses": round(exp, 2),
-        "net_income": round(net, 2),
-        "margin_pct": round(margin, 2),
-        "invoices_count": invoices_count,
-        "bills_count": bills_count,
-        "customers_active": customers_active,
-        "vendors_active": vendors_active,
-        "open_invoices": open_invoices,
-        "open_bills": open_bills,
+        "cash": round(cash, 2), "ar": round(ar, 2), "ap": round(ap, 2),
+        "revenue": round(rev, 2), "expenses": round(exp, 2),
+        "net_income": round(net, 2), "margin_pct": round(margin, 2),
+        "invoices_count": invoices_count, "bills_count": bills_count,
+        "customers_active": customers_active, "vendors_active": vendors_active,
+        "open_invoices": open_invoices, "open_bills": open_bills,
     }
 
 
@@ -753,9 +719,8 @@ def kpi_with_comparison(conn, from_date, to_date, compare_mode="previous_period"
     def delta(key):
         a = primary.get(key) or 0
         b = comparison.get(key) or 0
-        abs_change = round(a - b, 2)
-        pct_change = round(((a - b) / abs(b) * 100) if b else 0, 2)
-        return {"abs": abs_change, "pct": pct_change}
+        return {"abs": round(a - b, 2),
+                "pct": round(((a - b) / abs(b) * 100) if b else 0, 2)}
 
     deltas = {k: delta(k) for k in
               ["cash", "ar", "ap", "revenue", "expenses", "net_income",
@@ -783,8 +748,7 @@ def monthly_trend(conn, from_date, to_date):
         months.append({
             "month": cursor_d.strftime("%b %Y"),
             "month_key": cursor_d.strftime("%Y-%m"),
-            "revenue": round(rev, 2),
-            "expenses": round(exp, 2),
+            "revenue": round(rev, 2), "expenses": round(exp, 2),
             "net": round(rev - exp, 2),
         })
         cursor_d = add_months(cursor_d, 1)
@@ -836,6 +800,10 @@ def top_customers(conn, from_date, to_date, n=10):
 
 
 def top_vendors(conn, from_date, to_date, n=10):
+    """
+    Top vendors by purchase amount in the period, with QB-correct open balance.
+    balance: SUM(balance_remaining) of OPEN bills only (is_paid = 0).
+    """
     cur = conn.cursor()
     cur.execute("""
         SELECT vendor, SUM(amount) AS amount, COUNT(*) AS cnt FROM (
@@ -844,10 +812,21 @@ def top_vendors(conn, from_date, to_date, n=10):
             UNION ALL
             SELECT payee AS vendor, amount FROM check_txn
             WHERE txn_date >= ? AND txn_date <= ? AND payee IS NOT NULL
-        ) GROUP BY vendor ORDER BY amount DESC LIMIT ?
+        )
+        GROUP BY vendor ORDER BY amount DESC LIMIT ?
     """, (str(from_date), str(to_date), str(from_date), str(to_date), n))
-    return [{"vendor": r[0], "amount": round(r[1] or 0, 2), "transactions": r[2]}
-            for r in cur.fetchall()]
+    rows = cur.fetchall()
+    result = []
+    for r in rows:
+        vendor = r[0]
+        cur.execute("""
+            SELECT COALESCE(SUM(balance_remaining), 0)
+            FROM bill WHERE vendor_name = ? AND is_paid = 0
+        """, (vendor,))
+        balance = cur.fetchone()[0] or 0
+        result.append({"vendor": vendor, "amount": round(r[1] or 0, 2),
+                       "transactions": r[2], "balance": round(balance, 2)})
+    return result
 
 
 def top_items(conn, from_date, to_date, n=10):
@@ -903,6 +882,103 @@ def ap_aging(conn):
     return [{"bucket": k, "amount": round(v, 2)} for k, v in buckets.items()]
 
 
+# ===================== DATA QUALITY =====================
+
+def data_quality_check(conn, from_date, to_date):
+    """
+    Returns warnings about data the dashboard CANNOT reliably compute because
+    the importer didn't capture certain QB transaction types. Use this to
+    surface a banner in the UI ("Some QB data isn't being imported").
+    """
+    cur = conn.cursor()
+    warnings = []
+
+    # 1. Paycheck table presence
+    cur.execute("""
+        SELECT name FROM sqlite_master
+        WHERE type='table' AND name='paycheck'
+    """)
+    if not cur.fetchone():
+        # Cross-check whether the QB file likely HAS payroll by looking
+        # for active payroll-expense accounts.
+        cur.execute("""
+            SELECT COUNT(*) FROM account
+            WHERE is_active = 1
+              AND (full_name LIKE '%Gross Wages%' OR full_name LIKE '%Payroll Taxes%'
+                   OR full_name LIKE '%FUTA%' OR full_name LIKE '%SUTA%')
+        """)
+        if cur.fetchone()[0] > 0:
+            warnings.append({
+                "severity": "high",
+                "key": "no_paycheck_table",
+                "title": "Payroll transactions not imported",
+                "detail": ("Payroll expense accounts exist in the chart of accounts "
+                           "(Gross Wages, Payroll Taxes, FUTA, SUTA) but no paycheck "
+                           "table is present in the database. Payroll expenses will "
+                           "be missing from P&L. See importer notes."),
+            })
+
+    # 2. Inventory items being sold but no COGS posted
+    cur.execute("""
+        SELECT COUNT(DISTINCT il.item_name)
+        FROM invoice_line il
+        JOIN invoice inv ON inv.txn_id = il.txn_id
+        JOIN item i ON i.full_name = il.item_name
+        WHERE inv.txn_date BETWEEN ? AND ?
+          AND i.item_type = 'ItemInventory'
+          AND il.amount > 0
+    """, (str(from_date), str(to_date)))
+    inventory_sold = cur.fetchone()[0] or 0
+    cur.execute("""
+        SELECT COUNT(*) FROM journal_line jl
+        JOIN journal_entry je ON je.txn_id = jl.txn_id
+        JOIN account a ON a.full_name = jl.account_name
+        WHERE je.txn_date BETWEEN ? AND ?
+          AND a.account_type = 'CostOfGoodsSold'
+          AND jl.debit > 0
+    """, (str(from_date), str(to_date)))
+    cogs_je_count = cur.fetchone()[0] or 0
+    if inventory_sold > 0 and cogs_je_count == 0:
+        warnings.append({
+            "severity": "medium",
+            "key": "no_inventory_cogs",
+            "title": "Inventory COGS not posted",
+            "detail": (f"{inventory_sold} inventory items were sold in this period "
+                       "but no automatic COGS journal entries were imported. "
+                       "Gross profit will be overstated."),
+        })
+
+    # 3. Invoice lines with NULL income_account (mitigated by fallback now,
+    # but still worth surfacing)
+    cur.execute("""
+        SELECT COUNT(DISTINCT il.item_name), COALESCE(SUM(il.amount), 0)
+        FROM invoice_line il
+        JOIN invoice inv ON inv.txn_id = il.txn_id
+        LEFT JOIN item i ON i.full_name = il.item_name
+        WHERE inv.txn_date BETWEEN ? AND ?
+          AND (i.income_account IS NULL OR i.income_account = '')
+          AND il.item_name IS NOT NULL AND il.item_name != ''
+          AND il.amount > 0
+          AND COALESCE(i.item_type, '') NOT IN
+              ('ItemSubtotal', 'ItemDiscount', 'ItemPayment',
+               'ItemSalesTax', 'ItemSalesTaxGroup', 'ItemGroup')
+    """, (str(from_date), str(to_date)))
+    row = cur.fetchone()
+    bad_items, bad_amount = row[0] or 0, row[1] or 0
+    if bad_items > 0:
+        warnings.append({
+            "severity": "low",
+            "key": "items_no_income_account",
+            "title": "Items without income account (using fallback)",
+            "detail": (f"{bad_items} item(s) are missing a linked income account. "
+                       f"₹{bad_amount:,.2f} of revenue is being posted to the "
+                       "fallback Income account. Re-import items with full detail "
+                       "to assign proper income accounts."),
+        })
+
+    return warnings
+
+
 # ===================== DIAGNOSTICS =====================
 
 def diagnostics(conn):
@@ -915,8 +991,7 @@ def diagnostics(conn):
     accounts = [{"type": r[0], "name": r[1], "balance": r[2] or 0, "active": bool(r[3])}
                 for r in cur.fetchall()]
 
-    type_counts = {}
-    type_totals = {}
+    type_counts, type_totals = {}, {}
     for a in accounts:
         t = a["type"] or "(null)"
         type_counts[t] = type_counts.get(t, 0) + 1
@@ -938,85 +1013,9 @@ def diagnostics(conn):
     cur.execute("SELECT MIN(txn_date), MAX(txn_date) FROM bill")
     bill_range = cur.fetchone()
 
-    cur.execute("""
-        SELECT jl.account_name, SUM(jl.debit) AS total_debit,
-               SUM(jl.credit) AS total_credit, COUNT(*) AS line_count
-        FROM journal_line jl
-        WHERE jl.account_name IS NOT NULL AND jl.account_name != ''
-        GROUP BY jl.account_name
-        ORDER BY total_debit + total_credit DESC
-        LIMIT 25
-    """)
-    je_accounts = [{
-        "account": r[0], "total_debit": round(r[1] or 0, 2),
-        "total_credit": round(r[2] or 0, 2), "lines": r[3],
-    } for r in cur.fetchall()]
-    for rec in je_accounts:
-        cur.execute("SELECT account_type FROM account WHERE full_name = ?", (rec["account"],))
-        row = cur.fetchone()
-        rec["acc_master_type"] = row[0] if row else "NOT FOUND IN MASTER"
-
-    cur.execute("""
-        SELECT bl.expense_account, bl.item_name, bl.source_type,
-               SUM(bl.amount) AS total, COUNT(*) AS line_count
-        FROM bill_line bl
-        GROUP BY bl.expense_account, bl.item_name, bl.source_type
-        ORDER BY total DESC LIMIT 25
-    """)
-    bill_lines_summary = [{
-        "expense_account": r[0], "item_name": r[1], "source_type": r[2],
-        "total": round(r[3] or 0, 2), "lines": r[4],
-    } for r in cur.fetchall()]
-
-    cur.execute("""
-        SELECT COUNT(*) AS total,
-            SUM(CASE WHEN income_account IS NOT NULL AND income_account != '' THEN 1 ELSE 0 END) AS w_inc,
-            SUM(CASE WHEN expense_account IS NOT NULL AND expense_account != '' THEN 1 ELSE 0 END) AS w_exp,
-            SUM(CASE WHEN cogs_account IS NOT NULL AND cogs_account != '' THEN 1 ELSE 0 END) AS w_cogs
-        FROM item
-    """)
-    row = cur.fetchone()
-    item_status = {
-        "total_items": row[0] or 0,
-        "with_income_account": row[1] or 0,
-        "with_expense_account": row[2] or 0,
-        "with_cogs_account": row[3] or 0,
-    }
-
-    cur.execute("""
-        SELECT full_name, item_type, income_account, expense_account, cogs_account
-        FROM item ORDER BY full_name LIMIT 25
-    """)
-    item_sample = [{
-        "name": r[0], "type": r[1],
-        "income_account": r[2], "expense_account": r[3], "cogs_account": r[4]
-    } for r in cur.fetchall()]
-
-    cur.execute("""
-        SELECT 'bill' AS src, bl.expense_account, bl.item_name,
-               SUM(bl.amount) AS total, COUNT(*) AS lines
-        FROM bill_line bl
-        LEFT JOIN account a ON a.full_name = bl.expense_account
-                            AND a.account_type IN ('Expense','OtherExpense','CostOfGoodsSold')
-        LEFT JOIN item i ON i.full_name = bl.item_name
-        LEFT JOIN account a2 ON a2.full_name = i.cogs_account
-                             AND a2.account_type IN ('Expense','OtherExpense','CostOfGoodsSold')
-        LEFT JOIN account a3 ON a3.full_name = i.expense_account
-                             AND a3.account_type IN ('Expense','OtherExpense','CostOfGoodsSold')
-        WHERE a.full_name IS NULL AND a2.full_name IS NULL AND a3.full_name IS NULL
-          AND bl.amount != 0
-        GROUP BY bl.expense_account, bl.item_name
-        ORDER BY total DESC LIMIT 15
-    """)
-    unresolved_bill = [{
-        "source": r[0], "account": r[1], "item": r[2],
-        "total": round(r[3] or 0, 2), "lines": r[4]
-    } for r in cur.fetchall()]
-
     exp_by_acc = expense_by_account(conn, date(1900, 1, 1), today())
     top_expenses = sorted(exp_by_acc.items(), key=lambda x: -x[1])[:20]
 
-    # Also include GL movement totals to verify debits == credits
     gl_period = compute_gl_period(conn, date(1900, 1, 1), today())
     total_debits = sum(v["debit"] for v in gl_period.values())
     total_credits = sum(v["credit"] for v in gl_period.values())
@@ -1033,11 +1032,8 @@ def diagnostics(conn):
         "top_expense_accounts_all_time": [
             {"account": a, "amount": round(v, 2)} for a, v in top_expenses
         ],
-        "je_accounts_top": je_accounts,
-        "bill_lines_summary": bill_lines_summary,
-        "item_resolution_status": item_status,
-        "item_sample": item_sample,
-        "unresolved_bill_lines": unresolved_bill,
+        "data_quality": data_quality_check(conn, date(1900, 1, 1), today()),
+        "fallback_income_account": _fallback_income_account(conn),
         "gl_totals": {
             "total_debits": round(total_debits, 2),
             "total_credits": round(total_credits, 2),
